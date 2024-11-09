@@ -101,6 +101,7 @@ lin1d3_handle_t* lin1d3_InitNode(lin1d3_nodeConfig_t config)
 		master_task_name[strlen(master_task_name)-1] += node_idx++;
 		if (xTaskCreate(master_task, master_task_name, master_stack_size_d, handle, master_task_priority, &(handle->task_handle)) != pdPASS) {
 			vPortFree(handle);
+			PRINTF("%s\r\n",master_task_name);
 			return NULL;
 		}
 	}
@@ -109,6 +110,7 @@ lin1d3_handle_t* lin1d3_InitNode(lin1d3_nodeConfig_t config)
 		slave_task_name[strlen(slave_task_name)-1] += node_idx++;
 		if (xTaskCreate(slave_task, slave_task_name, slave_stack_size_d, handle, slave_task_priority, &(handle->task_handle)) != pdPASS) {
 			vPortFree(handle);
+			PRINTF("%s\r\n",slave_task_name);
 			return NULL;
 		}
 	}
@@ -140,6 +142,7 @@ static void master_task(void *pvParameters)
 	uint8_t  lin1p3_header[] = {0x55, 0x00};
 	uint8_t  lin1p3_message[size_of_uart_buffer];
 	uint8_t  message_size = 0;
+	size_t n;
 
 	if(handle == NULL) {
 		vTaskSuspend(NULL);
@@ -152,6 +155,10 @@ static void master_task(void *pvParameters)
         	/* Put the ID into the header */
         	lin1p3_header[1] = ID<<2;
         	/* TODO: put the parity bits */
+
+			/* HERE IN THE "calculate_parity()" FUNCTION, THE PARITY BITS ARE CALCULATED AND AFTER RETURN DE DATA */
+			lin1p3_header[1] = calculate_parity(lin1p3_header[1]);
+			
         	/* Init the message recevie buffer */
         	memset(lin1p3_message, 0, size_of_uart_buffer);
         	/* Calc the message size */
@@ -171,7 +178,32 @@ static void master_task(void *pvParameters)
         	vTaskDelay(1);
         	/* Send the header */
         	UART_RTOS_Send(handle->uart_rtos_handle, (uint8_t *)lin1p3_header, size_of_lin_header_d);
-        	vTaskDelay(1);
+        	vTaskDelay(2);
+			UART_RTOS_Receive(handle->uart_rtos_handle, lin1p3_message, message_size, &n);
+			
+        	/* TODO: Check the checksum on the message */
+			
+
+			/*********************************NOTA*********************************** */
+			/* QUEDA PENDIENTE LA PARTE DEL synch_break_byte */
+			/* EN ESTA PARTE NO TENGO MUY CLARO SI EL MAESTRO TAMBIEN DEBE REVISAR EL CHECKSUM */
+			/* SI ES ASI, USAR EL MISMO PRINCIPIO QUE EN LA TAREA ESCLAVO */
+			/* AGREGAR OTRO UART_RTOS_Receive() PARA ESPERAR EL CHECKBYTE */
+
+			/* UART_RTOS_Receive(handle->uart_rtos_handle, &checkbyte_received, 1, &n);
+			if (validate_checkbyte((uint8_t *)lin1p3_message, message_size, checkbyte_received))
+			{
+				/*If the message is in the table call the message callback
+        		handle->config.messageTable[msg_idx].handler((void*)lin1p3_message);
+			}
+			else
+			{
+				continue;
+			} */
+
+			/* HERE, THE CALLBACK FOR HANDLING THE RESPONSE IS CALLED */
+			handle->config.master_msgHandler((void*)lin1p3_message,(void*)&message_size);
+			vTaskDelay(2);
         }
     }
 }
@@ -186,6 +218,8 @@ static void slave_task(void *pvParameters)
 	size_t n;
 	uint8_t  msg_idx;
 	uint8_t synch_break_byte = 0;
+	uint8_t parity_check = 0;
+	uint8_t checkbyte_received;
 
 	if(handle == NULL) {
 		vTaskSuspend(NULL);
@@ -205,13 +239,21 @@ static void slave_task(void *pvParameters)
     	/* Check header */
     	if(/*(lin1p3_header[0] != 0x00) &&*/
     	   (lin1p3_header[0] != 0x55)) {
-    		/* TODO: Check ID parity bits */
     		/* Header is not correct we are ignoring the header */
     		continue;
     	}
-    	/* Get the message ID */
+		/* If the header is correct, check if the message is in the table */
+
+		/* THIS PART VALIDATE THE PARITY BITS*/
+		parity_check = validate_parity(lin1p3_header[1]);
+		if (!parity_check)
+		{
+			PRINTF("The parity bits are incorrect\r\n");
+			continue;
+		}
+		//PRINTF("The parity bits are correct\r\n");
+		/* Get the message ID */
     	ID = (lin1p3_header[1] & 0xFC)>>2;
-    	/* If the header is correct, check if the message is in the table */
     	msg_idx = 0;
     	/*Look for the ID in the message table */
     	while(msg_idx < lin1d3_max_supported_messages_per_node_cfg_d) {
@@ -220,39 +262,5 @@ static void slave_task(void *pvParameters)
     		}
     		msg_idx++;
     	}
-    	/* If the message ID was not found then ignore it */
-    	if(msg_idx == lin1d3_max_supported_messages_per_node_cfg_d) continue;
-
-    	/* Calc the message size */
-    	switch(ID&0x03) {
-    		case 0x00: message_size = 2;
-    		break;
-    		case 0x01: message_size = 2;
-    		break;
-    		case 0x02: message_size = 4;
-    		break;
-    		case 0x03: message_size = 8;
-    		break;
-    	}
-
-    	message_size+=1;
-    	/* Init the message transmit buffer */
-    	memset(lin1p3_message, 0, size_of_uart_buffer);
-
-    	if(handle->config.messageTable[msg_idx].rx == 0) {
-        	/*If the message is in the table call the message callback */
-    		/* User shall fill the message */
-        	handle->config.messageTable[msg_idx].handler((void*)lin1p3_message);
-        	/* TODO: Add the checksum to the message */
-        	/* Send the message data */
-        	UART_RTOS_Send(handle->uart_rtos_handle, (uint8_t *)lin1p3_message, message_size);
-    	}
-    	else {
-        	/* Wait for Response on the UART */
-        	UART_RTOS_Receive(handle->uart_rtos_handle, lin1p3_message, message_size, &n);
-        	/* TODO: Check the checksum on the message */
-        	/*If the message is in the table call the message callback */
-        	handle->config.messageTable[msg_idx].handler((void*)lin1p3_message);
-    	}
-    }
+	}
 }

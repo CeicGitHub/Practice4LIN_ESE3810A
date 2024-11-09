@@ -9,6 +9,7 @@
 #include "fsl_uart_freertos.h"
 #include "fsl_uart.h"
 #include "lin1d3_driver_Cfg.h"
+#include "validation.h"
 
 //Function_For_Node_Type
 typedef enum {
@@ -17,15 +18,16 @@ typedef enum {
 	lin1d3_max_nodeType
 }lin1d3_nodeType_t;
 
-
 #define message_size_2_bytes_d (0x01)
 #define message_size_4_bytes_d (0x02)
 #define message_size_8_bytes_d (0x03)
-
 /*
  * Function pointer type for the message handlers
  * */
 typedef void (*lin1d3_messageHandler_t)(void*);
+
+/* Here is defined the function pointer for the master message handler */
+typedef void (*lin1d3_master_messageHandler_t)(void*,void*);
 
 /*
  * Structure to link message IDs with message handlers
@@ -49,6 +51,7 @@ typedef struct {
 	uint32_t srcclk;		/* UART Clock */
 	uint32_t bitrate;		/* LIN bitrate to set */
 	lin1d3_messageConfig_t messageTable[lin1d3_max_supported_messages_per_node_cfg_d]; /* Table of supported IDs with its callbacks */
+	lin1d3_master_messageHandler_t master_msgHandler;
 }lin1d3_nodeConfig_t;
 
 /*
